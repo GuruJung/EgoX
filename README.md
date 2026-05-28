@@ -45,6 +45,85 @@ pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu12
 pip install -r requirements.txt
 ```
 
+### Docker / Compose Setup
+
+This repository also includes a GPU-enabled Docker Compose workflow. It keeps model weights, generated results, and Hugging Face caches in Docker named volumes, and mounts the host dataset directory configured by `DATASET_DIR`.
+
+Prerequisites on the host:
+- NVIDIA driver
+- NVIDIA Container Toolkit
+- Docker Compose v2
+
+Runtime defaults live in `.env`. The repository also includes `.env.example` with the same default values. Edit `.env` to change the Compose project name, image tag, shared memory size, dataset directory, exposed NVIDIA devices, inference GPU IDs/seeds, finetuning process count/config, Hugging Face cache paths, or model download repository/path settings.
+
+Build and start a reusable workspace container:
+
+```bash
+./dc-up.sh -d
+```
+
+Download the required model weights into the `checkpoints` volume:
+
+```bash
+docker compose run --rm download-wan
+docker compose run --rm download-egox
+```
+
+Run example inference:
+
+```bash
+docker compose run --rm infer-itw
+docker compose run --rm infer-ego4d
+```
+
+To select a specific visible GPU for inference, set `GPU_IDS`:
+
+```bash
+GPU_IDS=1 docker compose run --rm infer-itw
+```
+
+You can also set `GPU_IDS=1` in `.env` to make it the default for Compose runs.
+
+Run finetuning with the default 4-GPU accelerate config:
+
+```bash
+docker compose run --rm finetune
+```
+
+For a different GPU count, override the script defaults:
+
+```bash
+NUM_PROCESSES=1 ACCELERATE_CONFIG=configs_acc/1gpu.yaml docker compose run --rm finetune
+```
+
+To restrict which host GPUs Docker exposes, set `NVIDIA_VISIBLE_DEVICES`.
+
+Run one-off utilities inside the container:
+
+```bash
+docker compose run --rm tools python meta_init.py --folder_path ./dataset/train --output_json ./dataset/train/meta_with_uid.json --overwrite
+```
+
+`DATASET_DIR` is mounted at `/workspace/dataset` in the container. Put or download training data under:
+
+```bash
+${DATASET_DIR}/train
+```
+
+If `DATASET_DIR` is already exported in your shell, Docker Compose will use that shell value instead of the value in `.env`.
+
+Export generated results from the `results` volume:
+
+```bash
+docker compose cp workspace:/workspace/results ./results-export
+```
+
+Stop containers without deleting named volumes:
+
+```bash
+./dc-down.sh
+```
+
 ## 📥 Model Weights Download
 
 ### 💾 Wan2.1-I2V-14B Pretrained Model
@@ -225,7 +304,7 @@ python3 infer.py \
 
 ### Data Preparation
 
-Prepare your training dataset with the following structure:
+Prepare your training dataset with the following structure. In Docker Compose, this lives under `${DATASET_DIR}/train` on the host and is mounted as `/workspace/dataset/train` in the container:
 
 ```
 dataset/train/

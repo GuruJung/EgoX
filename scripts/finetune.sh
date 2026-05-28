@@ -3,13 +3,14 @@
 # Prevent tokenizer parallelism issues
 export TOKENIZERS_PARALLELISM=false
 
-export MASTER_ADDR=localhost
-export MASTER_PORT=29501
-export NNODES=1
-export NUM_PROCESSES=4
+export MASTER_ADDR=${MASTER_ADDR:-localhost}
+export MASTER_PORT=${MASTER_PORT:-29501}
+export NNODES=${NNODES:-1}
+export NUM_PROCESSES=${NUM_PROCESSES:-4}
+export ACCELERATE_CONFIG=${ACCELERATE_CONFIG:-configs_acc/4gpu.yaml}
 
 export LAUNCHER="accelerate launch \
-    --config_file configs_acc/4gpu.yaml \
+    --config_file $ACCELERATE_CONFIG \
     --main_process_ip $MASTER_ADDR \
     --main_process_port $MASTER_PORT \
     --machine_rank 0 \

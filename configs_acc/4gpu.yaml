@@ -1,6 +1,6 @@
 compute_environment: LOCAL_MACHINE
 
-gpu_ids: "1,2,3,6"
+gpu_ids: "1,2,3,4"
 num_processes: 4
 
 debug: false

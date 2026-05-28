@@ -1,6 +1,6 @@
 #!/bin/bash
-GPU_IDS=6
-SEED=42
+GPU_IDS=${GPU_IDS:-0}
+SEED=${SEED:-42}
 
 export CUDA_VISIBLE_DEVICES=$GPU_IDS
 
@@ -16,4 +16,3 @@ python3 infer.py \
     --seed $SEED \
     --use_GGA \
     --cos_sim_scaling_factor 3.0 \
-

@@ -1,4 +1,9 @@
 workspace/
+.codex
+.env
+.env.*
+!.env.example
+
 __pycache__/
 build/
 *.egg-info/
@@ -29,6 +34,7 @@ diffusers/
 *.pkl
 *.pt
 results/
+results-export/
 output*/
 log*
 

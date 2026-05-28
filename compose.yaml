@@ -1,0 +1,123 @@
+x-egox-env: &egox-env
+  PYTHONUNBUFFERED: "1"
+  TOKENIZERS_PARALLELISM: "false"
+  HF_HOME: ${EGOX_HF_HOME:-/cache/huggingface}
+  TRANSFORMERS_CACHE: ${EGOX_TRANSFORMERS_CACHE:-/cache/huggingface/transformers}
+  HF_HUB_CACHE: ${EGOX_HF_HUB_CACHE:-/cache/huggingface/hub}
+  NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+  NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility,video}
+
+x-egox-base: &egox-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: ${EGOX_IMAGE:-egox:local}
+  working_dir: /workspace
+  environment: *egox-env
+  volumes:
+    - type: bind
+      source: ./example
+      target: /workspace/example
+      read_only: true
+    - type: bind
+      source: ${DATASET_DIR:-./dataset}
+      target: /workspace/dataset
+    - checkpoints:/workspace/checkpoints
+    - results:/workspace/results
+    - hf-cache:${EGOX_HF_HOME:-/cache/huggingface}
+  shm_size: ${EGOX_SHM_SIZE:-16gb}
+  ulimits:
+    memlock: -1
+    stack: 67108864
+
+x-egox-gpu: &egox-gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+services:
+  workspace:
+    <<: [*egox-base, *egox-gpu]
+    command: ["sleep", "infinity"]
+
+  tools:
+    <<: [*egox-base, *egox-gpu]
+    profiles: ["tools"]
+    command: ["bash"]
+
+  download-wan:
+    <<: *egox-base
+    profiles: ["download"]
+    environment:
+      <<: *egox-env
+      WAN_REPO_ID: ${WAN_REPO_ID:-Wan-AI/Wan2.1-I2V-14B-480P-Diffusers}
+      WAN_LOCAL_DIR: ${WAN_LOCAL_DIR:-/workspace/checkpoints/pretrained_model/Wan2.1-I2V-14B-480P-Diffusers}
+    command:
+      - python
+      - -c
+      - >
+        import os;
+        from huggingface_hub import snapshot_download;
+        snapshot_download(
+          repo_id=os.environ['WAN_REPO_ID'],
+          local_dir=os.environ['WAN_LOCAL_DIR']
+        )
+
+  download-egox:
+    <<: *egox-base
+    profiles: ["download"]
+    environment:
+      <<: *egox-env
+      EGOX_REPO_ID: ${EGOX_REPO_ID:-DAVIAN-Robotics/EgoX}
+      EGOX_LOCAL_DIR: ${EGOX_LOCAL_DIR:-/workspace/checkpoints/EgoX}
+      EGOX_ALLOW_PATTERNS: ${EGOX_ALLOW_PATTERNS:-*.safetensors}
+    command:
+      - python
+      - -c
+      - >
+        import os;
+        from huggingface_hub import snapshot_download;
+        snapshot_download(
+          repo_id=os.environ['EGOX_REPO_ID'],
+          local_dir=os.environ['EGOX_LOCAL_DIR'],
+          allow_patterns=os.environ['EGOX_ALLOW_PATTERNS']
+        )
+
+  infer-itw:
+    <<: [*egox-base, *egox-gpu]
+    profiles: ["infer"]
+    environment:
+      <<: *egox-env
+      GPU_IDS: ${GPU_IDS:-0}
+      SEED: ${INFER_ITW_SEED:-846514}
+    command: ["bash", "scripts/infer_itw.sh"]
+
+  infer-ego4d:
+    <<: [*egox-base, *egox-gpu]
+    profiles: ["infer"]
+    environment:
+      <<: *egox-env
+      GPU_IDS: ${GPU_IDS:-0}
+      SEED: ${INFER_EGO4D_SEED:-42}
+    command: ["bash", "scripts/infer_ego4d.sh"]
+
+  finetune:
+    <<: [*egox-base, *egox-gpu]
+    profiles: ["train"]
+    environment:
+      <<: *egox-env
+      MASTER_ADDR: ${MASTER_ADDR:-localhost}
+      MASTER_PORT: ${MASTER_PORT:-29501}
+      NNODES: ${NNODES:-1}
+      NUM_PROCESSES: ${NUM_PROCESSES:-4}
+      ACCELERATE_CONFIG: ${ACCELERATE_CONFIG:-configs_acc/4gpu.yaml}
+    command: ["bash", "scripts/finetune.sh"]
+
+volumes:
+  checkpoints:
+  results:
+  hf-cache:
