@@ -38,6 +38,8 @@ def generate_video(
     Generates a video based on the given prompt and saves it to the specified path.
     """
 
+    # EgoX Fig. 3 generation stage: load the exocentric input X and the
+    # rendered egocentric prior P before passing them to the Wan pipeline.
     exo_video = load_video(video=exo_video_path)
     ego_prior_video = load_video(video=ego_prior_video_path)
 
@@ -66,6 +68,8 @@ def generate_video(
     ego_prior_first_frame = ego_prior_video[0] if ego_prior_video else None
 
 
+    # The model canvas is width-wise [exo 784px | ego 448px], matching the
+    # latent layout used during training.
     exo_width, exo_height = exo_first_frame.size
     ego_width, ego_height = ego_prior_first_frame.size
     assert exo_height == ego_height

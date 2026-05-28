@@ -94,6 +94,8 @@ def retrieve_latents(
         raise AttributeError("Could not access latents of provided encoder_output")
 
 class WanWidthConcatImageToVideoPipeline(WanImageToVideoPipeline):
+    # EgoX Sec. 3.2: keep exocentric content as a clean left-side latent
+    # canvas and synthesize the egocentric right-side region.
     def __init__(
         self,
         tokenizer: AutoTokenizer,
@@ -123,7 +125,8 @@ class WanWidthConcatImageToVideoPipeline(WanImageToVideoPipeline):
         latents: Optional[torch.Tensor] = None,
         last_images: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # Calculate latent dimensions for each view type
+        # EgoX unified conditioning: exo is width-wise concatenated with
+        # the ego target/prior because the two views are not pixel-aligned.
         num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
         latent_height = height // self.vae_scale_factor_spatial
         exo_latent_width = exo_width // self.vae_scale_factor_spatial  
@@ -146,6 +149,8 @@ class WanWidthConcatImageToVideoPipeline(WanImageToVideoPipeline):
         else:
             latents = latents.to(device=device, dtype=dtype)
 
+        # Ego prior P is viewpoint-aligned with the target ego view, so its
+        # latent replaces the right-side ego condition region.
         # Process ego prior video and replace ego region in shared latent
         # Add batch dimension if missing (video_processor outputs [C, F, H, W], VAE expects [B, C, F, H, W])
         if ego_prior_video.dim() == 4:
@@ -170,6 +175,8 @@ class WanWidthConcatImageToVideoPipeline(WanImageToVideoPipeline):
         latent_condition = latent_condition.to(dtype)
         # latent_condition = (latent_condition - latents_mean) * latents_std
 
+        # Eq. (3) mask term: exo/ego regions and visible temporal condition
+        # frames are encoded as inpainting-style mask channels.
         # Create mask for exo and ego views
         # Use num_frames (target frame count) like the parent class, not frame_num (input frame count)
         mask_lat_size = torch.ones(batch_size, 1, num_frames, latent_height, total_latent_width)
@@ -190,6 +197,8 @@ class WanWidthConcatImageToVideoPipeline(WanImageToVideoPipeline):
         mask_lat_size = mask_lat_size.transpose(1, 2)
         mask_lat_size = mask_lat_size.to(latent_condition.device)
 
+        # Ego prior and clean exo latents are supplied channel-wise to Wan's
+        # inpainting transformer as condition channels.
         return latents, torch.concat([mask_lat_size, latent_condition], dim=1), (exo_latent_width, ego_latent_width)
     
     def encode_video(self, video: torch.Tensor) -> torch.Tensor:
@@ -233,6 +242,8 @@ class WanWidthConcatImageToVideoPipeline(WanImageToVideoPipeline):
         
         batch_size = batch_size * num_videos_per_prompt # prepare_latent에서 bsz를 이렇게 넘기고 있음
         
+        # Clean exocentric latent x_0 from Eq. (3): the exo region is encoded
+        # once and reused as an unnoised conditioning region.
         # Encode exo_video using encode_video method
         # Add batch dimension if needed: [C, F, H, W] -> [1, C, F, H, W]
         if exo_video.dim() == 4:
@@ -245,7 +256,7 @@ class WanWidthConcatImageToVideoPipeline(WanImageToVideoPipeline):
         # Generate on CPU with generator, then move to device
         ego_latents = torch.randn(ego_shape, generator=generator, dtype=exo_latents.dtype).to(device)
         
-        # Concatenate exo + ego latents
+        # Width-wise layout used throughout EgoX: [exo latent | ego latent].
         self._shared_latent_exo_randn = torch.cat([exo_latents, ego_latents], dim=-1)
         
         print(f"Setup IC-LoRA latent: exo_shape={exo_latents.shape}, ego_shape={ego_latents.shape}, total_shape={self._shared_latent_exo_randn.shape}")
@@ -860,12 +871,12 @@ class WanI2VSftTrainer(Trainer):
         latent_condition = batch["encoded_exo_ego_prior_video"].to(transformer_dtype)
         image_embedding = batch["image_embedding"].to(transformer_dtype)
 
-        #####
+        # GGA tensors precomputed from depth and camera poses. These implement
+        # EgoX Sec. 3.3 geometry-guided self-attention during training.
         attention_GGA = batch["attention_GGA"] if "attention_GGA" in batch else None
         attention_mask_GGA = batch["attention_mask_GGA"] if "attention_mask_GGA" in batch else None
         point_vecs_per_frame = batch["point_vecs_per_frame"] if "point_vecs_per_frame" in batch else None
         cam_rays = batch["cam_rays"] if "cam_rays" in batch else None
-        #####
 
 
         batch_size, num_channels, num_frames, height, width = latent.shape
@@ -879,6 +890,8 @@ class WanI2VSftTrainer(Trainer):
         # Get actual number of frames from video_condition
         actual_num_frames = (num_frames - 1) * vae_scale_factor_temporal + 1
         
+        # Eq. (3) condition mask m: left exo tokens are clean context, right
+        # ego tokens are the synthesis target guided by ego prior P.
         mask_lat_size = torch.ones(latent_condition.shape[0], 1, actual_num_frames, latent_condition.shape[3], latent_condition.shape[4])
         
         exo_width, ego_width = 784, 448 #! HARD CODING
@@ -901,6 +914,7 @@ class WanI2VSftTrainer(Trainer):
         mask_lat_size = mask_lat_size.transpose(1, 2)  # VAE expects (B, F, C, H, W)
         mask_lat_size = mask_lat_size.to(latent_condition)
 
+        # Channel-wise inpainting condition: mask channels + [clean exo | ego prior].
         condition = torch.concat([mask_lat_size, latent_condition], dim=1) # [B, 20, 13, latent_H, latent_W]
 
         # Sample a random timestep for each sample
@@ -912,6 +926,8 @@ class WanI2VSftTrainer(Trainer):
         noise = torch.randn_like(latent)
         noisy_latents = (1.0 - sigmas) * latent + sigmas * noise
         
+        # Clean latent representation from EgoX Sec. 3.2: keep x_0 clean and
+        # only train denoising on the ego region.
         # Apply IC-LoRA style masking: keep exo region (left) as original, only noise ego region (right)
         noisy_latents[:, :, :, :, :-ego_latent_width] = latent[:, :, :, :, :-ego_latent_width]
         
@@ -933,6 +949,8 @@ class WanI2VSftTrainer(Trainer):
             do_kv_cache=True,
         )[0]
 
+        # EgoX discards the auxiliary exo canvas after generation, so the
+        # diffusion objective is computed only on the target ego latent.
         ego_predicted_noise = predicted_noise[:, :, :, :, -ego_latent_width:]
         ego_target = target[:, :, :, :, -ego_latent_width:]
         

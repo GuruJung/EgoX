@@ -253,6 +253,8 @@ class BaseWanDataset(Dataset):
                 pass
             ego_prior_video_tensor = self.video_transform(ego_prior_video_tensor)
             
+            # EgoX Sec. 3.2: encode X, Y, and ego prior P separately, then
+            # build the width-wise latent canvases [exo | ego].
             # Encode each video separately, then concatenate in latent space
             with torch.no_grad():
                 encoded_exo_video = self.encode_video(exo_video_tensor.permute(1, 0, 2, 3).to(self.device).unsqueeze(0))
@@ -290,6 +292,8 @@ class BaseWanDataset(Dataset):
                 encoded_exo_ego_prior_video = encoded_exo_ego_prior_video.to("cpu")
 
             if self.depth_map_paths is not None:
+                # Training-time version of GGA precomputation: depth and camera
+                # poses are converted to query/key direction vectors and cached.
                 device = encoded_exo_ego_gt_video.device
                 # 448, 1232
 
@@ -389,6 +393,8 @@ class BaseWanDataset(Dataset):
                     min_size = min(point_map.size(0), ego_extrinsic_c2w.size(0))
                     point_map = point_map[:min_size]
                 
+                # Exo key-side GGA vectors: directions from each ego camera
+                # center to the lifted exocentric point map.
                 point_vecs_per_frame = []
                 for i in range(cam_origins.size(0)):
                     point_vec = point_map[::4] - cam_origins[i].unsqueeze(0)  #! [B, H, W, 3]
@@ -402,6 +408,7 @@ class BaseWanDataset(Dataset):
                 # Apply simple 90-degree rotation to fix image orientation
                 cam_rays = cam_rays @ torch.tensor([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], device=cam_rays.device, dtype=cam_rays.dtype)  #! [B, H, W, 3]
 
+                # Matches the latent canvas: [exo point directions | ego camera rays].
                 attn_maps = torch.cat((point_vecs, cam_rays), dim = 2) #! iclora
                 attn_masks = torch.cat((torch.ones_like(point_vecs), torch.zeros_like(cam_rays)), dim = 2) #! iclora
 
@@ -453,7 +460,7 @@ class BaseWanDataset(Dataset):
             logger.info(f"Saved encoded videos to {encoded_video_path}", main_process_only=False)
 
 
-        ##############
+        # Cache GGA tensors so later epochs do not repeat the 3D geometry work.
         if attn_maps_paths.exists():
             loaded = load_file(attn_maps_paths)
             attn_maps = loaded["attn_maps"]

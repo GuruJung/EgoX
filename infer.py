@@ -92,6 +92,8 @@ def main(args):
         print(ego_prior_video_path)
 
         if args.use_GGA:
+            # EgoX Sec. 3.3: precompute Geometry-Guided Self-Attention inputs
+            # from aligned depth plus exo/ego camera parameters.
             depth_map_path = depth_map_paths[i]
             camera_intrinsic = camera_intrinsics[i]
             camera_extrinsic = camera_extrinsics[i]
@@ -104,6 +106,8 @@ def main(args):
             exo_H, exo_W = H, W - H
             W = H
 
+            # These .npy maps are the depth D_f used to lift exo pixels into
+            # 3D before constructing GGA direction vectors.
             depth_maps = []
             for depth_map_file in sorted(depth_map_path.glob("*.npy")):
                 depth_map = np.load(depth_map_file)
@@ -115,6 +119,7 @@ def main(args):
             camera_extrinsic=torch.tensor(camera_extrinsic)     #! (3,4)
             camera_intrinsic=torch.tensor(camera_intrinsic)     #! (3,3)
 
+            # Paper notation phi: target egocentric camera trajectory.
             if ego_extrinsic.shape[1] == 3 and ego_extrinsic.shape[2] == 4:
                 ego_extrinsic = torch.cat([ego_extrinsic, torch.tensor([[[0, 0, 0, 1]]], dtype=ego_extrinsic.dtype).expand(ego_extrinsic.shape[0], -1, -1)], dim=1)
             if camera_extrinsic.shape == (3, 4):
@@ -189,6 +194,8 @@ def main(args):
             rays = rays.unsqueeze(0).expand(depth_maps.size(0), -1, -1, -1)  # (F, H, W, 3)
             camera_extrinsics_c2w = torch.linalg.inv(camera_extrinsic)
 
+            # Lift exo depth pixels to a world-space point map. These points
+            # play the exocentric key locations in GGA.
             pcd_camera = rays * depth_maps.unsqueeze(-1)
             point_map = pcd_camera.to(dtype=camera_extrinsics_c2w.dtype)
             point_map = torch.tensor(point_map) #! [F, H, W, 3]
@@ -215,6 +222,8 @@ def main(args):
                 point_map = point_map[:min_size]
             
 
+            # For every ego frame, measure directions from the ego camera
+            # center to exo points; these become the exo key-side GGA vectors.
             point_vecs_per_frame = []
             for j in range(cam_origins.size(0)):
                 point_vec = point_map[::4] - cam_origins[j].unsqueeze(0)  #! [B, H, W, 3]
@@ -227,6 +236,7 @@ def main(args):
 
             cam_rays = torch.rot90(cam_rays, k=-1, dims=[1, 2])
 
+            # Layout matches the width-concat latent canvas: [exo vectors | ego rays].
             attn_maps = torch.cat((point_vecs, cam_rays), dim = 2)
             attn_masks = torch.cat((torch.ones_like(point_vecs), torch.zeros_like(cam_rays)), dim = 2)
         else:

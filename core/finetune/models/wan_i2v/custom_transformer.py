@@ -100,6 +100,9 @@ class WanAttnProcessor2_0:
             hidden_states_img = hidden_states_img.transpose(1, 2).flatten(2, 3)
             hidden_states_img = hidden_states_img.type_as(query)
 
+        # EgoX Sec. 3.3 / Eq. (4)-(7): inject the geometric prior as an
+        # additive log-bias on ego-token self-attention. The current code path
+        # is skipped when KV cache is enabled.
         if cos_sim is not None and not do_kv_cache:
             cos_sim = cos_sim + 1.0
             attn_mask_from_cos_sim = torch.log(cos_sim + 1e-6)
@@ -602,6 +605,8 @@ class WanTransformer3DModel_GGA(ModelMixin, ConfigMixin, PeftAdapterMixin, FromO
                 point_vecs_per_frame = point_vecs_per_frame.squeeze()
             if len(cam_rays.shape) != 4:
                 cam_rays = cam_rays.squeeze()
+            # Pixel-space 3D direction vectors are pooled to Wan patch-token
+            # scale before constructing the GGA attention bias.
             point_vecs_per_frame = torch.cat([point_vecs_per_frame, cam_rays.unsqueeze(0).repeat(point_vecs_per_frame.shape[0], 1, 1, 1, 1)], dim=-2) # F, F, H, W, C
             point_vecs_per_frame = point_vecs_per_frame.permute(0,4,1,2,3) # F, C, F, H, W
             point_vecs_per_frame = F.avg_pool3d(
@@ -635,6 +640,9 @@ class WanTransformer3DModel_GGA(ModelMixin, ConfigMixin, PeftAdapterMixin, FromO
             point_vecs_per_frame = point_vecs_per_frame.flatten(2).transpose(1,2)
             frame_cut = H * W
 
+            # Direction cosine between ego query rays and exo key point
+            # directions. This is the g(q_hat, k_hat) geometry term used by
+            # EgoX GGA.
             cos_sim = None
             cos_sim = torch.zeros((1, attention_GGA.shape[1], attention_GGA.shape[1]), device=hidden_states.device) #! 1, 28028, 28028
             for i in range(FF):

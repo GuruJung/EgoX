@@ -231,6 +231,8 @@ class Trainer:
                     component.requires_grad_(False)
 
         if self.args.training_type == "lora":
+            # EgoX uses lightweight LoRA adaptation on the pretrained Wan
+            # transformer instead of full-model finetuning.
             transformer_lora_config = LoraConfig(
                 r=self.args.rank,
                 lora_alpha=self.args.lora_alpha,
